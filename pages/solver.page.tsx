@@ -1,4 +1,6 @@
 import { GenericSolverDebugger } from "@tscircuit/solver-utils/react";
-import { MySolver } from "lib/my-solver";
+import { HighDensityRepair01 } from "lib/HighDensityRepair01";
 
-export default <GenericSolverDebugger createSolver={() => new MySolver()} />;
+export default (
+	<GenericSolverDebugger createSolver={() => new HighDensityRepair01()} />
+);

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { MySolver } from "lib/my-solver";
+import { HighDensityRepair01 } from "lib/HighDensityRepair01";
 
 test("exports the starter solver", () => {
-	expect(typeof MySolver).toBe("function");
+	expect(typeof HighDensityRepair01).toBe("function");
 });
