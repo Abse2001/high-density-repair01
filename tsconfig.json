@@ -22,5 +22,15 @@
 		"noUnusedLocals": false,
 		"noUnusedParameters": false,
 		"noPropertyAccessFromIndexSignature": false
-	}
+	},
+	"include": [
+		"lib/**/*.ts",
+		"pages/**/*.ts",
+		"pages/**/*.tsx",
+		"tests/**/*.ts",
+		"tests/**/*.tsx",
+		"cosmos.decorator.tsx",
+		"vite.config.ts"
+	],
+	"exclude": ["tscircuit-autorouter", "hd-cache.tscircuit.com"]
 }
