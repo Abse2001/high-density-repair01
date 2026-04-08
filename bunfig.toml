@@ -1,2 +1,6 @@
 [install.lockfile]
 save = false
+
+[test]
+root = "./tests"
+pathIgnorePatterns = ["tscircuit-autorouter/**", "hd-cache.tscircuit.com/**"]

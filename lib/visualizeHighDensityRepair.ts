@@ -189,7 +189,7 @@ const addRouteGraphics = (
 export const visualizeHighDensityRepair = (
   solver: HighDensityRepair01,
 ): GraphicsObject => {
-  const sample = solver.inputParams
+  const sample = solver.getVisualizedSample()
 
   const graphics: GraphicsObject = {
     points: [],
@@ -208,8 +208,11 @@ export const visualizeHighDensityRepair = (
 
   const colorMap = createColorMap(sample)
   const bounds = getNodeBounds(sample)
+  const rects = graphics.rects ?? (graphics.rects = [])
+  const lines = graphics.lines ?? (graphics.lines = [])
+  const points = graphics.points ?? (graphics.points = [])
 
-  graphics.rects.push({
+  rects.push({
     center: sample.nodeWithPortPoints.center,
     width: sample.nodeWithPortPoints.width,
     height: sample.nodeWithPortPoints.height,
@@ -219,7 +222,7 @@ export const visualizeHighDensityRepair = (
     layer: "node",
   })
 
-  graphics.lines.push({
+  lines.push({
     points: [
       { x: bounds.minX, y: bounds.minY },
       { x: bounds.maxX, y: bounds.minY },
@@ -242,7 +245,7 @@ export const visualizeHighDensityRepair = (
 
   for (const portPoint of sample.nodeWithPortPoints.portPoints) {
     const portColor = getRouteColor(portPoint, colorMap)
-    graphics.points.push({
+    points.push({
       x: portPoint.x,
       y: portPoint.y,
       color: portPoint.z === 0 ? portColor : withAlpha(portColor, 0.55),

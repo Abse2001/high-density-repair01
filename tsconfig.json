@@ -1,26 +1,44 @@
 {
-	"compilerOptions": {
-		"lib": ["ESNext", "DOM"],
-		"target": "ES2020",
-		"module": "ESNext",
-		"moduleDetection": "force",
-		"jsx": "react-jsx",
-		"allowJs": true,
-		"baseUrl": ".",
-		"paths": {
-			"lib/*": ["./lib/*"],
-			"tests/*": ["./tests/*"]
-		},
-		"esModuleInterop": true,
-		"moduleResolution": "bundler",
-		"allowImportingTsExtensions": true,
-		"verbatimModuleSyntax": true,
-		"noEmit": true,
-		"strict": true,
-		"skipLibCheck": true,
-		"noFallthroughCasesInSwitch": true,
-		"noUnusedLocals": false,
-		"noUnusedParameters": false,
-		"noPropertyAccessFromIndexSignature": false
-	}
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+    "baseUrl": ".",
+    "paths": {
+      "lib/*": ["./lib/*"],
+      "tests/*": ["./tests/*"]
+    },
+    "esModuleInterop": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  },
+  "include": [
+    "lib/**/*.ts",
+    "types/**/*.d.ts",
+    "pages/**/*.ts",
+    "pages/**/*.tsx",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "scripts/**/*.ts",
+    "cosmos.decorator.tsx",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "dist",
+    "hd-cache.tscircuit.com",
+    "pages/dataset-hd08.page.tsx",
+    "tmp",
+    "tscircuit-autorouter"
+  ]
 }

@@ -12,8 +12,13 @@
   "scripts": {
     "start": "cosmos",
     "build:site": "cosmos-export",
+    "analyze:dataset-hd08:drc": "bun scripts/analyze-dataset-hd08-drc.ts",
+    "analyze:hd08v2:unresolved": "bun scripts/analyze-hd08v2-unresolved.ts",
+    "build:hd08v2": "bun scripts/build-hd08v2.ts",
+    "measure:hd08v2:repair": "bun scripts/measure-hd08v2-repair.ts",
+    "render:hd08v2:repair": "bun scripts/render-hd08v2-repair.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
     "format": "biome format --write .",
     "format:check": "biome format ."
   },
@@ -33,5 +38,8 @@
     "react-dom": "^19.2.4",
     "typescript": "^5.9.3",
     "vite": "^8.0.1"
+  },
+  "dependencies": {
+    "flatbush": "^4.5.1"
   }
 }
