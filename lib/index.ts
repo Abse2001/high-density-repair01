@@ -1,6 +1,7 @@
 export { HighDensityRepair01 as MySolver } from "./HighDensityRepair01"
 export * from "./drc-check"
 export * from "./force-improve"
+export * from "./normalize-routes"
 export * from "./repair"
 export * from "./simplify"
 export type * from "./types"

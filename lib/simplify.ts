@@ -24,6 +24,22 @@ const copyPoint = (point: RoutePoint): RoutePoint => ({
     : { insideJumperPad: point.insideJumperPad }),
 })
 
+const copyPointExact = (point: RoutePoint): RoutePoint => ({
+  x: point.x,
+  y: point.y,
+  z: point.z,
+  ...(point.insideJumperPad === undefined
+    ? {}
+    : { insideJumperPad: point.insideJumperPad }),
+})
+
+const copyRoutePointsPreservingEndpoints = (points: RoutePoint[]) =>
+  points.map((point, index) =>
+    index === 0 || index === points.length - 1
+      ? copyPointExact(point)
+      : copyPoint(point),
+  )
+
 const isSamePosition = (left: RoutePoint, right: RoutePoint) =>
   left.x === right.x && left.y === right.y
 
@@ -237,7 +253,7 @@ export const simplifyRoute = (
   if (route.route.length < 2 || targetSegmentCount <= 0) {
     return {
       ...route,
-      route: route.route.map(copyPoint),
+      route: copyRoutePointsPreservingEndpoints(route.route),
       vias: route.vias.map((via) => ({
         x: roundCoordinate(via.x),
         y: roundCoordinate(via.y),
@@ -249,7 +265,7 @@ export const simplifyRoute = (
   if (sections.length === 0) {
     return {
       ...route,
-      route: route.route.map(copyPoint),
+      route: copyRoutePointsPreservingEndpoints(route.route),
       vias: route.vias.map((via) => ({
         x: roundCoordinate(via.x),
         y: roundCoordinate(via.y),
@@ -300,6 +316,17 @@ export const simplifyRoute = (
     for (const point of sectionPoints.slice(1)) {
       appendPoint(simplifiedPoints, point)
     }
+  }
+
+  const firstOriginalPoint = route.route[0]
+  const lastOriginalPoint = route.route.at(-1)
+  if (firstOriginalPoint && simplifiedPoints.length > 0) {
+    simplifiedPoints[0] = copyPointExact(firstOriginalPoint)
+  }
+  if (lastOriginalPoint && simplifiedPoints.length > 1) {
+    simplifiedPoints[simplifiedPoints.length - 1] = copyPointExact(
+      lastOriginalPoint,
+    )
   }
 
   return {

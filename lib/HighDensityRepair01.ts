@@ -32,6 +32,7 @@ export class HighDensityRepair01 extends BaseSolver {
       finalIssueCount: this.repairResult.finalDrc.issues.length,
       improved: this.repairResult.improved,
       issueCountDelta: this.repairResult.issueCountDelta,
+      normalizedIssueCount: this.repairResult.normalizedDrc.issues.length,
       originalIssueCount: this.repairResult.originalDrc.issues.length,
       repaired: this.repairResult.repaired,
       selectedStage: this.repairResult.selectedStage,

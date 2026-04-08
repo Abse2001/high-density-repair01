@@ -688,8 +688,8 @@ const materializeRoutes = (mutableRoutes: MutableRoute[]) =>
       return ownerNode
         ? {
             ...point,
-            x: roundCoordinate(ownerNode.x),
-            y: roundCoordinate(ownerNode.y),
+            x: ownerNode.fixed ? point.x : roundCoordinate(ownerNode.x),
+            y: ownerNode.fixed ? point.y : roundCoordinate(ownerNode.y),
           }
         : point
     })

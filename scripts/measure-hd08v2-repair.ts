@@ -74,6 +74,7 @@ if (selectedEntries.length === 0) {
 const measurements: SampleMeasurement[] = []
 const selectedStageCounts: Record<RepairStage, number> = {
   "force-improved": 0,
+  normalized: 0,
   original: 0,
   simplified: 0,
 }
@@ -170,7 +171,7 @@ if (values.json) {
     `Issue reduction: ${summary.totalOriginalIssueCount} -> ${summary.totalFinalIssueCount} (${summary.totalIssueReduction} fewer issues)`,
   )
   console.log(
-    `Selected stages: original=${summary.selectedStageCounts.original}, simplified=${summary.selectedStageCounts.simplified}, force-improved=${summary.selectedStageCounts["force-improved"]}`,
+    `Selected stages: original=${summary.selectedStageCounts.original}, normalized=${summary.selectedStageCounts.normalized}, simplified=${summary.selectedStageCounts.simplified}, force-improved=${summary.selectedStageCounts["force-improved"]}`,
   )
 
   if (topRepaired.length > 0) {

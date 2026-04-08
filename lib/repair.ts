@@ -4,13 +4,18 @@ import {
   type ForceImproveResult,
   runForceDirectedImprovement,
 } from "./force-improve"
+import { normalizeRoutesToPortAttachments } from "./normalize-routes"
 import { simplifyRoutes } from "./simplify"
 import type { HighDensityRepair01Input, NodeHdRoute } from "./types"
 
 export const DEFAULT_REPAIR_TARGET_SEGMENTS = 10
 export const DEFAULT_FORCE_IMPROVEMENT_PASSES = 100
 
-export type RepairStage = "original" | "simplified" | "force-improved"
+export type RepairStage =
+  | "original"
+  | "normalized"
+  | "simplified"
+  | "force-improved"
 
 export type RepairSampleOptions = ForceImproveOptions & {
   forceImprovementPasses?: number
@@ -24,6 +29,8 @@ export type RepairSampleResult = {
   forceImproveResult: ForceImproveResult
   improved: boolean
   issueCountDelta: number
+  normalizedDrc: DrcCheckResult
+  normalizedRoutes: NodeHdRoute[]
   originalDrc: DrcCheckResult
   repaired: boolean
   sample: HighDensityRepair01Input
@@ -61,12 +68,17 @@ export const repairSample = (
 ): RepairSampleResult => {
   const originalRoutes = cloneRoutes(sample.nodeHdRoutes)
   const originalDrc = runDrcCheck(sample.nodeWithPortPoints, originalRoutes)
+  const normalizedRoutes = normalizeRoutesToPortAttachments(
+    sample.nodeWithPortPoints,
+    originalRoutes,
+  )
+  const normalizedDrc = runDrcCheck(sample.nodeWithPortPoints, normalizedRoutes)
 
   const simplifiedRoutes =
     options.simplifyBeforeImprove === false
-      ? cloneRoutes(originalRoutes)
+      ? cloneRoutes(normalizedRoutes)
       : simplifyRoutes(
-          originalRoutes,
+          normalizedRoutes,
           options.targetSegments ?? DEFAULT_REPAIR_TARGET_SEGMENTS,
         )
   const simplifiedDrc = runDrcCheck(sample.nodeWithPortPoints, simplifiedRoutes)
@@ -97,6 +109,12 @@ export const repairSample = (
   let selectedRoutes = originalRoutes
   let finalDrc = originalDrc
 
+  if (isBetterDrcResult(normalizedDrc, finalDrc)) {
+    selectedStage = "normalized"
+    selectedRoutes = normalizedRoutes
+    finalDrc = normalizedDrc
+  }
+
   if (isBetterDrcResult(simplifiedDrc, finalDrc)) {
     selectedStage = "simplified"
     selectedRoutes = simplifiedRoutes
@@ -115,6 +133,8 @@ export const repairSample = (
     forceImproveResult,
     improved: finalDrc.issues.length < originalDrc.issues.length,
     issueCountDelta: originalDrc.issues.length - finalDrc.issues.length,
+    normalizedDrc,
+    normalizedRoutes,
     originalDrc,
     repaired: !originalDrc.ok && finalDrc.ok,
     sample: {
