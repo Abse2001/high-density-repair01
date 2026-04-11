@@ -1,3 +1,4 @@
+import Flatbush from "flatbush"
 import type { GraphicsObject } from "graphics-debug"
 import type {
   HighDensityRoute,
@@ -55,10 +56,20 @@ type ViaForceElement = ForceElementBase & {
 type ForceElement = PointForceElement | ViaForceElement
 
 type SegmentObstacle = {
+  obstacleIndex: number
   rootConnectionName: string
   z: number
   startNode: MutableNode
   endNode: MutableNode
+}
+
+type SegmentSpatialLayerIndex = {
+  index: Flatbush
+  segments: SegmentObstacle[]
+}
+
+type SegmentSpatialIndex = {
+  byLayer: Map<number, SegmentSpatialLayerIndex>
 }
 
 type ForceImproveSampleEntry = {
@@ -82,8 +93,60 @@ export type ForceImproveResult = {
   stepsCompleted: number
 }
 
+export type ForceImproveProfilePhaseTimes = {
+  buildMutableRoutesMs: number
+  buildForceElementsMs: number
+  buildSegmentObstaclesMs: number
+  initialClampMs: number
+  viaViaRepulsionMs: number
+  elementSegmentRepulsionMs: number
+  borderForceMs: number
+  nodeMovementMs: number
+  stepClampMs: number
+  clearanceProjectionMs: number
+  finalClearanceProjectionMs: number
+  materializeRoutesMs: number
+}
+
+export type ForceImproveProfileCounts = {
+  viaElementCount: number
+  pointElementCount: number
+  viaViaPairChecks: number
+  viaViaDistanceChecks: number
+  viaViaInteractions: number
+  elementSegmentPairChecks: number
+  elementSegmentDistanceChecks: number
+  elementSegmentInteractions: number
+  projectionCalls: number
+  projectionPasses: number
+  projectionViaViaPairChecks: number
+  projectionViaViaDistanceChecks: number
+  projectionViaViaCorrections: number
+  projectionElementSegmentPairChecks: number
+  projectionElementSegmentDistanceChecks: number
+  projectionElementSegmentCorrections: number
+}
+
+export type ForceImproveProfileRun = {
+  label?: string
+  elapsedMs: number
+  routeCount: number
+  totalSteps: number
+  totalNodeCount: number
+  forceElementCount: number
+  segmentCount: number
+  phaseMs: ForceImproveProfilePhaseTimes
+  counts: ForceImproveProfileCounts
+}
+
+export type ForceImproveProfile = {
+  runs: ForceImproveProfileRun[]
+}
+
 export type ForceImproveOptions = {
   includeForceVectors?: boolean
+  profile?: ForceImproveProfile
+  profileLabel?: string
 }
 
 const TARGET_CLEARANCE = 0.2
@@ -134,6 +197,40 @@ const DEFAULT_TOTAL_STEPS_PER_NODE = 60
 const ROUNDING_PRECISION = 1_000
 const POSITION_EPSILON = 1e-6
 const BOUNDARY_INSET = 1 / ROUNDING_PRECISION
+
+const createEmptyProfilePhaseTimes = (): ForceImproveProfilePhaseTimes => ({
+  buildMutableRoutesMs: 0,
+  buildForceElementsMs: 0,
+  buildSegmentObstaclesMs: 0,
+  initialClampMs: 0,
+  viaViaRepulsionMs: 0,
+  elementSegmentRepulsionMs: 0,
+  borderForceMs: 0,
+  nodeMovementMs: 0,
+  stepClampMs: 0,
+  clearanceProjectionMs: 0,
+  finalClearanceProjectionMs: 0,
+  materializeRoutesMs: 0,
+})
+
+const createEmptyProfileCounts = (): ForceImproveProfileCounts => ({
+  viaElementCount: 0,
+  pointElementCount: 0,
+  viaViaPairChecks: 0,
+  viaViaDistanceChecks: 0,
+  viaViaInteractions: 0,
+  elementSegmentPairChecks: 0,
+  elementSegmentDistanceChecks: 0,
+  elementSegmentInteractions: 0,
+  projectionCalls: 0,
+  projectionPasses: 0,
+  projectionViaViaPairChecks: 0,
+  projectionViaViaDistanceChecks: 0,
+  projectionViaViaCorrections: 0,
+  projectionElementSegmentPairChecks: 0,
+  projectionElementSegmentDistanceChecks: 0,
+  projectionElementSegmentCorrections: 0,
+})
 
 const roundCoordinate = (value: number) =>
   Math.round(value * ROUNDING_PRECISION) / ROUNDING_PRECISION
@@ -515,6 +612,7 @@ const buildSegmentObstacles = (routes: MutableRoute[]): SegmentObstacle[] => {
 
       if (!startNode || !endNode || !routePoint) continue
       segments.push({
+        obstacleIndex: segments.length,
         rootConnectionName: mutableRoute.rootConnectionName,
         z: routePoint.z,
         startNode,
@@ -661,6 +759,80 @@ const getBorderForce = (
   }
 }
 
+const buildSegmentSpatialLayerIndex = (
+  segments: SegmentObstacle[],
+): SegmentSpatialLayerIndex | null => {
+  if (segments.length === 0) {
+    return null
+  }
+
+  const index = new Flatbush(segments.length)
+  for (const segment of segments) {
+    const { startNode, endNode } = segment
+    index.add(
+      Math.min(startNode.x, endNode.x),
+      Math.min(startNode.y, endNode.y),
+      Math.max(startNode.x, endNode.x),
+      Math.max(startNode.y, endNode.y),
+    )
+  }
+  index.finish()
+
+  return { index, segments }
+}
+
+const buildSegmentSpatialIndex = (
+  segments: SegmentObstacle[],
+): SegmentSpatialIndex => {
+  const byLayer = new Map<number, SegmentSpatialLayerIndex>()
+  const segmentsByLayer = new Map<number, SegmentObstacle[]>()
+
+  for (const segment of segments) {
+    const layerSegments = segmentsByLayer.get(segment.z) ?? []
+    layerSegments.push(segment)
+    segmentsByLayer.set(segment.z, layerSegments)
+  }
+
+  for (const [layer, layerSegments] of segmentsByLayer) {
+    const layerIndex = buildSegmentSpatialLayerIndex(layerSegments)
+    if (layerIndex) {
+      byLayer.set(layer, layerIndex)
+    }
+  }
+
+  return { byLayer }
+}
+
+const getSegmentSpatialSearches = (
+  segmentSpatialIndex: SegmentSpatialIndex,
+  element: ForceElement,
+  elementX: number,
+  elementY: number,
+  expansion: number,
+) => {
+  const searchLayerIndex = (layerIndex: SegmentSpatialLayerIndex) => ({
+    candidateIndexes: layerIndex.index.search(
+      elementX - expansion,
+      elementY - expansion,
+      elementX + expansion,
+      elementY + expansion,
+    ),
+    segments: layerIndex.segments,
+  })
+
+  if (element.kind === "point") {
+    const layerIndex = segmentSpatialIndex.byLayer.get(element.z)
+    return layerIndex ? [searchLayerIndex(layerIndex)] : []
+  }
+
+  const searches: ReturnType<typeof searchLayerIndex>[] = []
+  for (const layerIndex of segmentSpatialIndex.byLayer.values()) {
+    searches.push(searchLayerIndex(layerIndex))
+  }
+
+  return searches
+}
+
 const deriveVias = (route: HighDensityRoute) => {
   const vias: HighDensityRoute["vias"] = []
 
@@ -725,9 +897,16 @@ const resolveClearanceConstraints = (
   nodeCorrections: Float64Array,
   passCount = CLEARANCE_PROJECTION_PASSES,
   maxCorrection = MAX_CLEARANCE_CORRECTION,
+  profileCounts?: ForceImproveProfileCounts,
 ) => {
+  if (profileCounts) {
+    profileCounts.projectionCalls += 1
+    profileCounts.projectionPasses += passCount
+  }
+
   for (let passIndex = 0; passIndex < passCount; passIndex += 1) {
     nodeCorrections.fill(0)
+    const segmentSpatialIndex = buildSegmentSpatialIndex(segments)
 
     for (let leftIndex = 0; leftIndex < forceElements.length; leftIndex += 1) {
       const leftElement = forceElements[leftIndex]
@@ -741,6 +920,9 @@ const resolveClearanceConstraints = (
       ) {
         const rightElement = forceElements[rightIndex]
         if (!rightElement || rightElement.kind !== "via") continue
+        if (profileCounts) {
+          profileCounts.projectionViaViaPairChecks += 1
+        }
         if (
           leftElement.rootConnectionName === rightElement.rootConnectionName
         ) {
@@ -756,9 +938,15 @@ const resolveClearanceConstraints = (
         ) {
           continue
         }
+        if (profileCounts) {
+          profileCounts.projectionViaViaDistanceChecks += 1
+        }
         const distance = Math.hypot(separationX, separationY)
         const penetration = TARGET_CLEARANCE - distance
         if (penetration <= 0) continue
+        if (profileCounts) {
+          profileCounts.projectionViaViaCorrections += 1
+        }
 
         const fallbackSeed =
           passIndex * 1_009 + leftIndex * 97 + rightIndex * 13
@@ -805,105 +993,99 @@ const resolveClearanceConstraints = (
       const element = forceElements[elementIndex]
       if (!element) continue
       const elementNode = element.node
+      const targetClearance = getElementTargetClearance(element)
+      const segmentSearches = getSegmentSpatialSearches(
+        segmentSpatialIndex,
+        element,
+        elementNode.x,
+        elementNode.y,
+        targetClearance,
+      )
 
-      for (
-        let segmentIndex = 0;
-        segmentIndex < segments.length;
-        segmentIndex += 1
-      ) {
-        const segment = segments[segmentIndex]
-        if (!segment) continue
-        if (element.rootConnectionName === segment.rootConnectionName) {
-          continue
-        }
-        if (element.kind === "point" && element.z !== segment.z) {
-          continue
-        }
-        const { startNode, endNode } = segment
-        const targetClearance = getElementTargetClearance(element)
-        const minSegmentX = Math.min(startNode.x, endNode.x)
-        const maxSegmentX = Math.max(startNode.x, endNode.x)
-        const minSegmentY = Math.min(startNode.y, endNode.y)
-        const maxSegmentY = Math.max(startNode.y, endNode.y)
-        if (
-          isOutsideExpandedBounds(
-            elementNode.x,
-            elementNode.y,
-            minSegmentX,
-            maxSegmentX,
-            minSegmentY,
-            maxSegmentY,
-            targetClearance,
-          )
-        ) {
-          continue
-        }
-
-        const segmentX = endNode.x - startNode.x
-        const segmentY = endNode.y - startNode.y
-        const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
-        if (segmentLengthSquared <= POSITION_EPSILON) {
-          continue
-        }
-
-        const toPointX = elementNode.x - startNode.x
-        const toPointY = elementNode.y - startNode.y
-        const segmentT = clampUnitInterval(
-          (toPointX * segmentX + toPointY * segmentY) / segmentLengthSquared,
-        )
-        const closestPointX = startNode.x + segmentX * segmentT
-        const closestPointY = startNode.y + segmentY * segmentT
-        const separationX = elementNode.x - closestPointX
-        const separationY = elementNode.y - closestPointY
-        const distance = Math.hypot(separationX, separationY)
-        const penetration = targetClearance - distance
-        if (penetration <= 0) continue
-
-        const fallbackSeed =
-          passIndex * 1_009 + elementIndex * 97 + segmentIndex * 13
-        let directionX = 0
-        let directionY = 0
-
-        if (distance > POSITION_EPSILON) {
-          const inverseDistance = 1 / distance
-          directionX = separationX * inverseDistance
-          directionY = separationY * inverseDistance
-        } else {
-          const normalX = -segmentY
-          const normalY = segmentX
-          const normalMagnitude = Math.hypot(normalX, normalY)
-          if (normalMagnitude > POSITION_EPSILON) {
-            const directionScale =
-              (fallbackSeed % 2 === 0 ? 1 : -1) / normalMagnitude
-            directionX = normalX * directionScale
-            directionY = normalY * directionScale
-          } else {
-            const angle = fallbackSeed * 1.618_033_988_75
-            directionX = Math.cos(angle)
-            directionY = Math.sin(angle)
+      for (const segmentSearch of segmentSearches) {
+        for (const candidateIndex of segmentSearch.candidateIndexes) {
+          const segment = segmentSearch.segments[candidateIndex]
+          if (!segment) continue
+          if (profileCounts) {
+            profileCounts.projectionElementSegmentPairChecks += 1
           }
+          if (element.rootConnectionName === segment.rootConnectionName) {
+            continue
+          }
+          const { startNode, endNode } = segment
+          if (profileCounts) {
+            profileCounts.projectionElementSegmentDistanceChecks += 1
+          }
+
+          const segmentX = endNode.x - startNode.x
+          const segmentY = endNode.y - startNode.y
+          const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
+          if (segmentLengthSquared <= POSITION_EPSILON) {
+            continue
+          }
+
+          const toPointX = elementNode.x - startNode.x
+          const toPointY = elementNode.y - startNode.y
+          const segmentT = clampUnitInterval(
+            (toPointX * segmentX + toPointY * segmentY) / segmentLengthSquared,
+          )
+          const closestPointX = startNode.x + segmentX * segmentT
+          const closestPointY = startNode.y + segmentY * segmentT
+          const separationX = elementNode.x - closestPointX
+          const separationY = elementNode.y - closestPointY
+          const distance = Math.hypot(separationX, separationY)
+          const penetration = targetClearance - distance
+          if (penetration <= 0) continue
+          if (profileCounts) {
+            profileCounts.projectionElementSegmentCorrections += 1
+          }
+
+          const fallbackSeed =
+            passIndex * 1_009 + elementIndex * 97 + segment.obstacleIndex * 13
+          let directionX = 0
+          let directionY = 0
+
+          if (distance > POSITION_EPSILON) {
+            const inverseDistance = 1 / distance
+            directionX = separationX * inverseDistance
+            directionY = separationY * inverseDistance
+          } else {
+            const normalX = -segmentY
+            const normalY = segmentX
+            const normalMagnitude = Math.hypot(normalX, normalY)
+            if (normalMagnitude > POSITION_EPSILON) {
+              const directionScale =
+                (fallbackSeed % 2 === 0 ? 1 : -1) / normalMagnitude
+              directionX = normalX * directionScale
+              directionY = normalY * directionScale
+            } else {
+              const angle = fallbackSeed * 1.618_033_988_75
+              directionX = Math.cos(angle)
+              directionY = Math.sin(angle)
+            }
+          }
+
+          const magnitude = Math.min(
+            getMaxCorrectionForElement(element, maxCorrection),
+            penetration * getProjectionRatio(element),
+          )
+          const pointCorrectionX = directionX * magnitude
+          const pointCorrectionY = directionY * magnitude
+
+          applyForceToElement(
+            element,
+            pointCorrectionX,
+            pointCorrectionY,
+            nodeCorrections,
+          )
+          distributeForceToSegmentPoints(
+            segment,
+            -pointCorrectionX,
+            -pointCorrectionY,
+            nodeCorrections,
+            segmentT,
+          )
         }
-
-        const magnitude = Math.min(
-          getMaxCorrectionForElement(element, maxCorrection),
-          penetration * getProjectionRatio(element),
-        )
-        const pointCorrectionX = directionX * magnitude
-        const pointCorrectionY = directionY * magnitude
-
-        applyForceToElement(
-          element,
-          pointCorrectionX,
-          pointCorrectionY,
-          nodeCorrections,
-        )
-        distributeForceToSegmentPoints(
-          segment,
-          -pointCorrectionX,
-          -pointCorrectionY,
-          nodeCorrections,
-          segmentT,
-        )
       }
     }
 
@@ -951,13 +1133,54 @@ export const runForceDirectedImprovement = (
   totalSteps: number,
   options?: ForceImproveOptions,
 ): ForceImproveResult => {
+  const profileRun = options?.profile
+    ? {
+        label: options.profileLabel,
+        elapsedMs: 0,
+        routeCount: routes.length,
+        totalSteps,
+        totalNodeCount: 0,
+        forceElementCount: 0,
+        segmentCount: 0,
+        phaseMs: createEmptyProfilePhaseTimes(),
+        counts: createEmptyProfileCounts(),
+      }
+    : undefined
+  const profileStartedAt = profileRun ? performance.now() : 0
+  let phaseStartedAt = profileRun ? performance.now() : 0
   const { mutableRoutes, totalNodeCount } = buildMutableRoutes(routes)
+  if (profileRun) {
+    profileRun.phaseMs.buildMutableRoutesMs +=
+      performance.now() - phaseStartedAt
+    profileRun.totalNodeCount = totalNodeCount
+    phaseStartedAt = performance.now()
+  }
   const forceElements = buildForceElements(mutableRoutes)
+  if (profileRun) {
+    profileRun.phaseMs.buildForceElementsMs +=
+      performance.now() - phaseStartedAt
+    profileRun.forceElementCount = forceElements.length
+    profileRun.counts.viaElementCount = forceElements.filter(
+      (element) => element.kind === "via",
+    ).length
+    profileRun.counts.pointElementCount =
+      forceElements.length - profileRun.counts.viaElementCount
+    phaseStartedAt = performance.now()
+  }
   const segments = buildSegmentObstacles(mutableRoutes)
+  if (profileRun) {
+    profileRun.phaseMs.buildSegmentObstaclesMs +=
+      performance.now() - phaseStartedAt
+    profileRun.segmentCount = segments.length
+    phaseStartedAt = performance.now()
+  }
   const nodeForces = new Float64Array(totalNodeCount * 2)
   const nodeCorrections = new Float64Array(totalNodeCount * 2)
   const includeForceVectors = options?.includeForceVectors ?? true
   clampMutableRoutesToBounds(mutableRoutes, bounds)
+  if (profileRun) {
+    profileRun.phaseMs.initialClampMs += performance.now() - phaseStartedAt
+  }
   let forceVectors: ForceVector[] = []
 
   for (let stepIndex = 0; stepIndex < totalSteps; stepIndex += 1) {
@@ -972,6 +1195,9 @@ export const runForceDirectedImprovement = (
       : undefined
     nodeForces.fill(0)
 
+    if (profileRun) {
+      phaseStartedAt = performance.now()
+    }
     for (let leftIndex = 0; leftIndex < forceElements.length; leftIndex += 1) {
       const leftElement = forceElements[leftIndex]
       if (!leftElement || leftElement.kind !== "via") continue
@@ -984,6 +1210,9 @@ export const runForceDirectedImprovement = (
       ) {
         const rightElement = forceElements[rightIndex]
         if (!rightElement || rightElement.kind !== "via") continue
+        if (profileRun) {
+          profileRun.counts.viaViaPairChecks += 1
+        }
         if (
           leftElement.rootConnectionName === rightElement.rootConnectionName
         ) {
@@ -998,6 +1227,9 @@ export const runForceDirectedImprovement = (
           Math.abs(separationY) >= CLEARANCE_FALLOFF_DISTANCE
         ) {
           continue
+        }
+        if (profileRun) {
+          profileRun.counts.viaViaDistanceChecks += 1
         }
         const distance = Math.hypot(separationX, separationY)
         const fallbackSeed = leftIndex * 97 + rightIndex * 13
@@ -1023,6 +1255,9 @@ export const runForceDirectedImprovement = (
           ) * stepDecay
 
         if (magnitude <= 0) continue
+        if (profileRun) {
+          profileRun.counts.viaViaInteractions += 1
+        }
 
         const leftForceX = directionX * magnitude
         const leftForceY = directionY * magnitude
@@ -1044,7 +1279,12 @@ export const runForceDirectedImprovement = (
         )
       }
     }
+    if (profileRun) {
+      profileRun.phaseMs.viaViaRepulsionMs += performance.now() - phaseStartedAt
+      phaseStartedAt = performance.now()
+    }
 
+    const segmentSpatialIndex = buildSegmentSpatialIndex(segments)
     for (
       let elementIndex = 0;
       elementIndex < forceElements.length;
@@ -1053,113 +1293,112 @@ export const runForceDirectedImprovement = (
       const element = forceElements[elementIndex]
       if (!element) continue
       const elementNode = element.node
+      const falloffDistance = getElementFalloffDistance(element)
+      const segmentSearches = getSegmentSpatialSearches(
+        segmentSpatialIndex,
+        element,
+        elementNode.x,
+        elementNode.y,
+        falloffDistance,
+      )
 
-      for (
-        let segmentIndex = 0;
-        segmentIndex < segments.length;
-        segmentIndex += 1
-      ) {
-        const segment = segments[segmentIndex]
-        if (!segment) continue
-        if (element.rootConnectionName === segment.rootConnectionName) {
-          continue
-        }
-        if (element.kind === "point" && element.z !== segment.z) {
-          continue
-        }
-        const { startNode, endNode } = segment
-        const falloffDistance = getElementFalloffDistance(element)
-        const minSegmentX = Math.min(startNode.x, endNode.x)
-        const maxSegmentX = Math.max(startNode.x, endNode.x)
-        const minSegmentY = Math.min(startNode.y, endNode.y)
-        const maxSegmentY = Math.max(startNode.y, endNode.y)
-        if (
-          isOutsideExpandedBounds(
-            elementNode.x,
-            elementNode.y,
-            minSegmentX,
-            maxSegmentX,
-            minSegmentY,
-            maxSegmentY,
-            falloffDistance,
-          )
-        ) {
-          continue
-        }
-
-        const segmentX = endNode.x - startNode.x
-        const segmentY = endNode.y - startNode.y
-        const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
-        if (segmentLengthSquared <= POSITION_EPSILON) {
-          continue
-        }
-
-        const toPointX = elementNode.x - startNode.x
-        const toPointY = elementNode.y - startNode.y
-        const segmentT = clampUnitInterval(
-          (toPointX * segmentX + toPointY * segmentY) / segmentLengthSquared,
-        )
-        const closestPointX = startNode.x + segmentX * segmentT
-        const closestPointY = startNode.y + segmentY * segmentT
-        const separationX = elementNode.x - closestPointX
-        const separationY = elementNode.y - closestPointY
-        const distance = Math.hypot(separationX, separationY)
-        const fallbackSeed = elementIndex * 97 + segmentIndex * 13
-        let directionX = 0
-        let directionY = 0
-
-        if (distance > POSITION_EPSILON) {
-          const inverseDistance = 1 / distance
-          directionX = separationX * inverseDistance
-          directionY = separationY * inverseDistance
-        } else {
-          const normalX = -segmentY
-          const normalY = segmentX
-          const normalMagnitude = Math.hypot(normalX, normalY)
-          if (normalMagnitude > POSITION_EPSILON) {
-            const directionScale =
-              (fallbackSeed % 2 === 0 ? 1 : -1) / normalMagnitude
-            directionX = normalX * directionScale
-            directionY = normalY * directionScale
-          } else {
-            const angle = fallbackSeed * 1.618_033_988_75
-            directionX = Math.cos(angle)
-            directionY = Math.sin(angle)
+      for (const segmentSearch of segmentSearches) {
+        for (const candidateIndex of segmentSearch.candidateIndexes) {
+          const segment = segmentSearch.segments[candidateIndex]
+          if (!segment) continue
+          if (profileRun) {
+            profileRun.counts.elementSegmentPairChecks += 1
           }
+          if (element.rootConnectionName === segment.rootConnectionName) {
+            continue
+          }
+          const { startNode, endNode } = segment
+          if (profileRun) {
+            profileRun.counts.elementSegmentDistanceChecks += 1
+          }
+
+          const segmentX = endNode.x - startNode.x
+          const segmentY = endNode.y - startNode.y
+          const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
+          if (segmentLengthSquared <= POSITION_EPSILON) {
+            continue
+          }
+
+          const toPointX = elementNode.x - startNode.x
+          const toPointY = elementNode.y - startNode.y
+          const segmentT = clampUnitInterval(
+            (toPointX * segmentX + toPointY * segmentY) / segmentLengthSquared,
+          )
+          const closestPointX = startNode.x + segmentX * segmentT
+          const closestPointY = startNode.y + segmentY * segmentT
+          const separationX = elementNode.x - closestPointX
+          const separationY = elementNode.y - closestPointY
+          const distance = Math.hypot(separationX, separationY)
+          const fallbackSeed = elementIndex * 97 + segment.obstacleIndex * 13
+          let directionX = 0
+          let directionY = 0
+
+          if (distance > POSITION_EPSILON) {
+            const inverseDistance = 1 / distance
+            directionX = separationX * inverseDistance
+            directionY = separationY * inverseDistance
+          } else {
+            const normalX = -segmentY
+            const normalY = segmentX
+            const normalMagnitude = Math.hypot(normalX, normalY)
+            if (normalMagnitude > POSITION_EPSILON) {
+              const directionScale =
+                (fallbackSeed % 2 === 0 ? 1 : -1) / normalMagnitude
+              directionX = normalX * directionScale
+              directionY = normalY * directionScale
+            } else {
+              const angle = fallbackSeed * 1.618_033_988_75
+              directionX = Math.cos(angle)
+              directionY = Math.sin(angle)
+            }
+          }
+
+          const magnitude =
+            getClearanceForceMagnitude(
+              distance,
+              getPointSegmentRepulsionStrength(element),
+              REPULSION_TAIL_RATIO,
+              REPULSION_FALLOFF,
+              getElementIntersectionBoost(element),
+              getElementTargetClearance(element),
+              falloffDistance,
+            ) * stepDecay
+
+          if (magnitude <= 0) continue
+          if (profileRun) {
+            profileRun.counts.elementSegmentInteractions += 1
+          }
+
+          const pointForceX = directionX * magnitude
+          const pointForceY = directionY * magnitude
+
+          applyForceToElement(
+            element,
+            pointForceX,
+            pointForceY,
+            nodeForces,
+            elementForces,
+            elementIndex,
+          )
+          distributeForceToSegmentPoints(
+            segment,
+            -pointForceX,
+            -pointForceY,
+            nodeForces,
+            segmentT,
+          )
         }
-
-        const magnitude =
-          getClearanceForceMagnitude(
-            distance,
-            getPointSegmentRepulsionStrength(element),
-            REPULSION_TAIL_RATIO,
-            REPULSION_FALLOFF,
-            getElementIntersectionBoost(element),
-            getElementTargetClearance(element),
-            falloffDistance,
-          ) * stepDecay
-
-        if (magnitude <= 0) continue
-
-        const pointForceX = directionX * magnitude
-        const pointForceY = directionY * magnitude
-
-        applyForceToElement(
-          element,
-          pointForceX,
-          pointForceY,
-          nodeForces,
-          elementForces,
-          elementIndex,
-        )
-        distributeForceToSegmentPoints(
-          segment,
-          -pointForceX,
-          -pointForceY,
-          nodeForces,
-          segmentT,
-        )
       }
+    }
+    if (profileRun) {
+      profileRun.phaseMs.elementSegmentRepulsionMs +=
+        performance.now() - phaseStartedAt
+      phaseStartedAt = performance.now()
     }
 
     if (captureForceVectors) {
@@ -1203,6 +1442,10 @@ export const runForceDirectedImprovement = (
           dy: elementForces[forceOffset + 1] ?? 0,
         }
       }
+    }
+    if (profileRun) {
+      profileRun.phaseMs.borderForceMs += performance.now() - phaseStartedAt
+      phaseStartedAt = performance.now()
     }
 
     for (
@@ -1332,17 +1575,35 @@ export const runForceDirectedImprovement = (
         node.y += movementY + tighteningMoveY + orthogonalMoveY
       }
     }
+    if (profileRun) {
+      profileRun.phaseMs.nodeMovementMs += performance.now() - phaseStartedAt
+      phaseStartedAt = performance.now()
+    }
 
     clampMutableRoutesToBounds(mutableRoutes, bounds)
+    if (profileRun) {
+      profileRun.phaseMs.stepClampMs += performance.now() - phaseStartedAt
+      phaseStartedAt = performance.now()
+    }
     resolveClearanceConstraints(
       bounds,
       mutableRoutes,
       forceElements,
       segments,
       nodeCorrections,
+      CLEARANCE_PROJECTION_PASSES,
+      MAX_CLEARANCE_CORRECTION,
+      profileRun?.counts,
     )
+    if (profileRun) {
+      profileRun.phaseMs.clearanceProjectionMs +=
+        performance.now() - phaseStartedAt
+    }
   }
 
+  if (profileRun) {
+    phaseStartedAt = performance.now()
+  }
   resolveClearanceConstraints(
     bounds,
     mutableRoutes,
@@ -1351,10 +1612,23 @@ export const runForceDirectedImprovement = (
     nodeCorrections,
     FINAL_CLEARANCE_PROJECTION_PASSES,
     FINAL_MAX_CLEARANCE_CORRECTION,
+    profileRun?.counts,
   )
+  if (profileRun) {
+    profileRun.phaseMs.finalClearanceProjectionMs +=
+      performance.now() - phaseStartedAt
+    phaseStartedAt = performance.now()
+  }
+
+  const improvedRoutes = materializeRoutes(mutableRoutes)
+  if (profileRun) {
+    profileRun.phaseMs.materializeRoutesMs += performance.now() - phaseStartedAt
+    profileRun.elapsedMs = performance.now() - profileStartedAt
+    options?.profile?.runs.push(profileRun)
+  }
 
   return {
-    routes: materializeRoutes(mutableRoutes),
+    routes: improvedRoutes,
     forceVectors,
     stepsCompleted: totalSteps,
   }
@@ -1367,6 +1641,7 @@ export class HighDensityForceImproveSolver extends BaseSolver {
   readonly colorMap: Record<string, string>
   readonly totalStepsPerNode: number
   readonly nodeAssignmentMargin: number
+  readonly profile?: ForceImproveProfile
 
   improvedRoutesByIndex = new Map<number, HighDensityRoute>()
   activeSampleIndex = 0
@@ -1378,11 +1653,13 @@ export class HighDensityForceImproveSolver extends BaseSolver {
     totalStepsPerNode?: number
     nodeAssignmentMargin?: number
     colorMap?: Record<string, string>
+    profile?: ForceImproveProfile
   }) {
     super()
     this.originalHdRoutes = params.hdRoutes
     this.originalNodeWithPortPoints = params.nodeWithPortPoints
     this.colorMap = params.colorMap ?? {}
+    this.profile = params.profile
     this.totalStepsPerNode =
       params.totalStepsPerNode ?? DEFAULT_TOTAL_STEPS_PER_NODE
     this.nodeAssignmentMargin =
@@ -1410,6 +1687,7 @@ export class HighDensityForceImproveSolver extends BaseSolver {
 
     this.MAX_ITERATIONS = Math.max(this.sampleEntries.length * 10, 1_000)
     this.stats = {
+      nodeAssignmentMargin: this.nodeAssignmentMargin,
       sampleCount: this.sampleEntries.length,
       improvedNodeCount: 0,
       improvedRouteCount: 0,
@@ -1449,7 +1727,11 @@ export class HighDensityForceImproveSolver extends BaseSolver {
       bounds,
       inputRoutes,
       this.totalStepsPerNode,
-      { includeForceVectors: true },
+      {
+        includeForceVectors: true,
+        profile: this.profile,
+        profileLabel: sampleEntry.node.capacityMeshNodeId,
+      },
     )
 
     for (let i = 0; i < sampleEntry.routeIndexes.length; i++) {
@@ -1468,6 +1750,7 @@ export class HighDensityForceImproveSolver extends BaseSolver {
 
     this.activeSampleIndex += 1
     this.stats = {
+      nodeAssignmentMargin: this.nodeAssignmentMargin,
       sampleCount: this.sampleEntries.length,
       improvedNodeCount: this.activeSampleIndex,
       improvedRouteCount: this.improvedRoutesByIndex.size,
