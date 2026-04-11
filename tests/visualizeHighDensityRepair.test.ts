@@ -85,7 +85,9 @@ test("visualizeHighDensityRepair renders node, routes, and obstacles", () => {
   )
   expect(
     graphics.points?.some((point) =>
-      point.label?.includes(sample.nodeWithPortPoints.portPoints[0]?.connectionName),
+      point.label?.includes(
+        sample.nodeWithPortPoints.portPoints[0]?.connectionName,
+      ),
     ),
   ).toBe(true)
   expect(

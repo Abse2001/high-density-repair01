@@ -324,9 +324,8 @@ export const simplifyRoute = (
     simplifiedPoints[0] = copyPointExact(firstOriginalPoint)
   }
   if (lastOriginalPoint && simplifiedPoints.length > 1) {
-    simplifiedPoints[simplifiedPoints.length - 1] = copyPointExact(
-      lastOriginalPoint,
-    )
+    simplifiedPoints[simplifiedPoints.length - 1] =
+      copyPointExact(lastOriginalPoint)
   }
 
   return {

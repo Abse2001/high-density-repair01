@@ -127,7 +127,9 @@ const failingSamples = (await Bun.file(assetPath).json()) as Record<
 const selectedKeys =
   values.sample && values.sample.length > 0
     ? values.sample
-    : Object.keys(failingSamples).sort().slice(0, limit ?? 4)
+    : Object.keys(failingSamples)
+        .sort()
+        .slice(0, limit ?? 4)
 
 if (selectedKeys.length === 0) {
   throw new Error("No samples selected.")
@@ -144,7 +146,10 @@ for (const sampleKey of selectedKeys) {
 
   const simplifiedSample: HighDensityRepair01Input = {
     ...sample,
-    nodeHdRoutes: simplifyRoutes(cloneRoutes(sample.nodeHdRoutes), targetSegments),
+    nodeHdRoutes: simplifyRoutes(
+      cloneRoutes(sample.nodeHdRoutes),
+      targetSegments,
+    ),
   }
   const repairResult = repairSample(sample, {
     forceImprovementPasses,
