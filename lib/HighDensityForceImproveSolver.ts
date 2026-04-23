@@ -42,7 +42,6 @@ type ForceElementBase = {
   rootConnectionName: string
   node: MutableNode
   fixed: boolean
-  radius: number
 }
 
 type PointForceElement = ForceElementBase & {
@@ -62,7 +61,6 @@ type SegmentObstacle = {
   z: number
   startNode: MutableNode
   endNode: MutableNode
-  traceRadius: number
 }
 
 type SegmentSpatialLayerIndex = {
@@ -77,6 +75,27 @@ type SegmentSpatialIndex = {
 type ForceImproveSampleEntry = {
   node: NodeWithPortPoints
   routeIndexes: number[]
+}
+
+type ProjectionViaNode = {
+  routeIndex: number
+  rootConnectionName: string
+  pointIndexes: number[]
+  x: number
+  y: number
+  radius: number
+  movable: boolean
+}
+
+type ProjectionSegment = {
+  routeIndex: number
+  rootConnectionName: string
+  startIndex: number
+  endIndex: number
+  start: Vector
+  end: Vector
+  z: number
+  traceRadius: number
 }
 
 export type ForceVector = {
@@ -146,7 +165,14 @@ const DEFAULT_TOTAL_STEPS_PER_NODE = 60
 
 const ROUNDING_PRECISION = 1_000
 const POSITION_EPSILON = 1e-6
+const COORDINATE_MATCH_EPSILON = 1e-3
 const BOUNDARY_INSET = 1 / ROUNDING_PRECISION
+const RELAXED_VIA_CLEARANCE = 0.1
+const RELAXED_TRACE_CLEARANCE = 0.1
+const CLEARANCE_SLACK = 0.015
+const VIA_PROJECTION_PASSES = 10
+const MAX_VIA_MOVE_PER_PASS = 0.04
+const MAX_TRACE_MOVE_PER_PASS = 0.025
 
 const roundCoordinate = (value: number) =>
   Math.round(value * ROUNDING_PRECISION) / ROUNDING_PRECISION
@@ -488,7 +514,6 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
           rootConnectionName: mutableRoute.rootConnectionName,
           node,
           fixed: node.fixed,
-          radius: node.boundaryPadding || mutableRoute.route.viaDiameter / 2,
         })
         continue
       }
@@ -500,7 +525,6 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
         node,
         z: routePoint.z,
         fixed: node.fixed,
-        radius: mutableRoute.route.traceThickness / 2,
       })
     }
   }
@@ -535,7 +559,6 @@ const buildSegmentObstacles = (routes: MutableRoute[]): SegmentObstacle[] => {
         z: routePoint.z,
         startNode,
         endNode,
-        traceRadius: mutableRoute.route.traceThickness / 2,
       })
     }
   }
@@ -808,6 +831,536 @@ const materializeRoutes = (mutableRoutes: MutableRoute[]) =>
     return nextRoute
   })
 
+const getRouteRootConnectionName = (route: HighDensityRoute) =>
+  route.rootConnectionName ?? route.connectionName
+
+const areSameXY = (left: Vector, right: Vector) =>
+  Math.abs(left.x - right.x) <= COORDINATE_MATCH_EPSILON &&
+  Math.abs(left.y - right.y) <= COORDINATE_MATCH_EPSILON
+
+const getInsetNodeBounds = (
+  node: NodeWithPortPoints,
+  padding: number,
+): Bounds => ({
+  minX: node.center.x - node.width / 2 + padding,
+  maxX: node.center.x + node.width / 2 - padding,
+  minY: node.center.y - node.height / 2 + padding,
+  maxY: node.center.y + node.height / 2 - padding,
+})
+
+const clampProjectionViaToNode = (
+  via: ProjectionViaNode,
+  node: NodeWithPortPoints,
+) => {
+  const bounds = getInsetNodeBounds(node, via.radius + POSITION_EPSILON)
+  via.x = clampValue(via.x, bounds.minX, bounds.maxX)
+  via.y = clampValue(via.y, bounds.minY, bounds.maxY)
+}
+
+const collectProjectionViaNodes = (
+  routes: HighDensityRoute[],
+): ProjectionViaNode[] => {
+  const viaNodes: ProjectionViaNode[] = []
+
+  for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
+    const route = routes[routeIndex]
+    if (!route) continue
+    const seenPointIndexes = new Set<number>()
+
+    for (let index = 0; index < route.route.length - 1; index += 1) {
+      const current = route.route[index]
+      const next = route.route[index + 1]
+      if (!current || !next) continue
+      if (current.z === next.z || !areSameXY(current, next)) continue
+
+      const pointIndexes = [index, index + 1]
+      for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+        const point = route.route[cursor]
+        if (!point || !areSameXY(point, current)) break
+        pointIndexes.push(cursor)
+      }
+      for (let cursor = index + 2; cursor < route.route.length; cursor += 1) {
+        const point = route.route[cursor]
+        if (!point || !areSameXY(point, current)) break
+        pointIndexes.push(cursor)
+      }
+
+      const uniquePointIndexes = [...new Set(pointIndexes)].sort(
+        (a, b) => a - b,
+      )
+      if (
+        [...seenPointIndexes].some((seen) => uniquePointIndexes.includes(seen))
+      ) {
+        continue
+      }
+      for (const pointIndex of uniquePointIndexes) {
+        seenPointIndexes.add(pointIndex)
+      }
+
+      viaNodes.push({
+        routeIndex,
+        rootConnectionName: getRouteRootConnectionName(route),
+        pointIndexes: uniquePointIndexes,
+        x: current.x,
+        y: current.y,
+        radius: (route.viaDiameter ?? VIA_DIAMETER) / 2,
+        movable:
+          !uniquePointIndexes.includes(0) &&
+          !uniquePointIndexes.includes(route.route.length - 1),
+      })
+    }
+  }
+
+  return viaNodes
+}
+
+const collectProjectionSegments = (
+  routes: HighDensityRoute[],
+): ProjectionSegment[] => {
+  const segments: ProjectionSegment[] = []
+
+  for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
+    const route = routes[routeIndex]
+    if (!route) continue
+
+    for (let index = 0; index < route.route.length - 1; index += 1) {
+      const start = route.route[index]
+      const end = route.route[index + 1]
+      if (!start || !end) continue
+      if (start.z !== end.z || areSameXY(start, end)) continue
+
+      segments.push({
+        routeIndex,
+        rootConnectionName: getRouteRootConnectionName(route),
+        startIndex: index,
+        endIndex: index + 1,
+        start,
+        end,
+        z: start.z,
+        traceRadius: (route.traceThickness ?? 0.1) / 2,
+      })
+    }
+  }
+
+  return segments
+}
+
+const pointToProjectionSegment = (
+  point: Vector,
+  segment: ProjectionSegment,
+) => {
+  const segmentX = segment.end.x - segment.start.x
+  const segmentY = segment.end.y - segment.start.y
+  const lengthSquared = segmentX * segmentX + segmentY * segmentY
+
+  if (lengthSquared <= POSITION_EPSILON) {
+    return { x: segment.start.x, y: segment.start.y, t: 0 }
+  }
+
+  const rawT =
+    ((point.x - segment.start.x) * segmentX +
+      (point.y - segment.start.y) * segmentY) /
+    lengthSquared
+  const t = clampUnitInterval(rawT)
+
+  return {
+    x: segment.start.x + segmentX * t,
+    y: segment.start.y + segmentY * t,
+    t,
+  }
+}
+
+const applyProjectionViaMove = (
+  routes: HighDensityRoute[],
+  via: ProjectionViaNode,
+  dx: number,
+  dy: number,
+  node: NodeWithPortPoints,
+) => {
+  if (!via.movable) return false
+
+  via.x += dx
+  via.y += dy
+  clampProjectionViaToNode(via, node)
+
+  const route = routes[via.routeIndex]
+  if (!route) return false
+  for (const pointIndex of via.pointIndexes) {
+    const point = route.route[pointIndex]
+    if (!point) continue
+    point.x = via.x
+    point.y = via.y
+  }
+
+  return true
+}
+
+const projectViaViaClearance = (
+  routes: HighDensityRoute[],
+  node: NodeWithPortPoints,
+  vias: ProjectionViaNode[],
+) => {
+  let changed = false
+
+  for (let leftIndex = 0; leftIndex < vias.length; leftIndex += 1) {
+    const left = vias[leftIndex]
+    if (!left) continue
+
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < vias.length;
+      rightIndex += 1
+    ) {
+      const right = vias[rightIndex]
+      if (!right) continue
+
+      const requiredDistance =
+        left.radius + right.radius + RELAXED_VIA_CLEARANCE + CLEARANCE_SLACK
+      const separationX = left.x - right.x
+      const separationY = left.y - right.y
+      const distance = Math.hypot(separationX, separationY)
+      const penetration = requiredDistance - distance
+      if (penetration <= 0) continue
+
+      const fallbackAngle =
+        (leftIndex * 97 + rightIndex * 13) * 1.618_033_988_75
+      const directionX =
+        distance > POSITION_EPSILON
+          ? separationX / distance
+          : Math.cos(fallbackAngle)
+      const directionY =
+        distance > POSITION_EPSILON
+          ? separationY / distance
+          : Math.sin(fallbackAngle)
+      const movableCount = Number(left.movable) + Number(right.movable)
+      if (movableCount === 0) continue
+
+      const move = Math.min(MAX_VIA_MOVE_PER_PASS, penetration / movableCount)
+      changed =
+        applyProjectionViaMove(
+          routes,
+          left,
+          directionX * move,
+          directionY * move,
+          node,
+        ) || changed
+      changed =
+        applyProjectionViaMove(
+          routes,
+          right,
+          -directionX * move,
+          -directionY * move,
+          node,
+        ) || changed
+    }
+  }
+
+  return changed
+}
+
+const projectViaSegmentClearance = (
+  routes: HighDensityRoute[],
+  node: NodeWithPortPoints,
+  vias: ProjectionViaNode[],
+  segments: ProjectionSegment[],
+) => {
+  let changed = false
+
+  for (let viaIndex = 0; viaIndex < vias.length; viaIndex += 1) {
+    const via = vias[viaIndex]
+    if (!via?.movable) continue
+
+    for (const segment of segments) {
+      if (via.rootConnectionName === segment.rootConnectionName) continue
+
+      const projection = pointToProjectionSegment(via, segment)
+      const separationX = via.x - projection.x
+      const separationY = via.y - projection.y
+      const distance = Math.hypot(separationX, separationY)
+      const requiredDistance =
+        via.radius +
+        segment.traceRadius +
+        RELAXED_TRACE_CLEARANCE +
+        CLEARANCE_SLACK
+      const penetration = requiredDistance - distance
+      if (penetration <= 0) continue
+
+      const segmentX = segment.end.x - segment.start.x
+      const segmentY = segment.end.y - segment.start.y
+      const normalMagnitude = Math.hypot(segmentX, segmentY)
+      const fallbackSign = viaIndex % 2 === 0 ? 1 : -1
+      const directionX =
+        distance > POSITION_EPSILON
+          ? separationX / distance
+          : normalMagnitude > POSITION_EPSILON
+            ? (-segmentY / normalMagnitude) * fallbackSign
+            : 1
+      const directionY =
+        distance > POSITION_EPSILON
+          ? separationY / distance
+          : normalMagnitude > POSITION_EPSILON
+            ? (segmentX / normalMagnitude) * fallbackSign
+            : 0
+      const move = Math.min(MAX_VIA_MOVE_PER_PASS, penetration)
+
+      changed =
+        applyProjectionViaMove(
+          routes,
+          via,
+          directionX * move,
+          directionY * move,
+          node,
+        ) || changed
+    }
+  }
+
+  return changed
+}
+
+const getProjectionSegmentDistanceCandidates = (
+  left: ProjectionSegment,
+  right: ProjectionSegment,
+) => {
+  const leftStartProjection = pointToProjectionSegment(left.start, right)
+  const leftEndProjection = pointToProjectionSegment(left.end, right)
+  const rightStartProjection = pointToProjectionSegment(right.start, left)
+  const rightEndProjection = pointToProjectionSegment(right.end, left)
+
+  return [
+    {
+      leftT: 0,
+      rightT: leftStartProjection.t,
+      leftPoint: left.start,
+      rightPoint: leftStartProjection,
+    },
+    {
+      leftT: 1,
+      rightT: leftEndProjection.t,
+      leftPoint: left.end,
+      rightPoint: leftEndProjection,
+    },
+    {
+      leftT: rightStartProjection.t,
+      rightT: 0,
+      leftPoint: rightStartProjection,
+      rightPoint: right.start,
+    },
+    {
+      leftT: rightEndProjection.t,
+      rightT: 1,
+      leftPoint: rightEndProjection,
+      rightPoint: right.end,
+    },
+  ].sort((a, b) => {
+    const aDistance = Math.hypot(
+      a.leftPoint.x - a.rightPoint.x,
+      a.leftPoint.y - a.rightPoint.y,
+    )
+    const bDistance = Math.hypot(
+      b.leftPoint.x - b.rightPoint.x,
+      b.leftPoint.y - b.rightPoint.y,
+    )
+    return aDistance - bDistance
+  })
+}
+
+const getCoincidentProjectionPointIndexes = (
+  route: HighDensityRoute,
+  pointIndex: number,
+) => {
+  const point = route.route[pointIndex]
+  if (!point) return []
+
+  const pointIndexes = [pointIndex]
+  for (let cursor = pointIndex - 1; cursor >= 0; cursor -= 1) {
+    const candidate = route.route[cursor]
+    if (!candidate || !areSameXY(candidate, point)) break
+    pointIndexes.push(cursor)
+  }
+  for (let cursor = pointIndex + 1; cursor < route.route.length; cursor += 1) {
+    const candidate = route.route[cursor]
+    if (!candidate || !areSameXY(candidate, point)) break
+    pointIndexes.push(cursor)
+  }
+
+  return [...new Set(pointIndexes)]
+}
+
+const applyProjectionRoutePointMove = (
+  routes: HighDensityRoute[],
+  routeIndex: number,
+  pointIndex: number,
+  dx: number,
+  dy: number,
+  node: NodeWithPortPoints,
+) => {
+  const route = routes[routeIndex]
+  if (!route || pointIndex <= 0 || pointIndex >= route.route.length - 1) {
+    return false
+  }
+
+  const pointIndexes = getCoincidentProjectionPointIndexes(route, pointIndex)
+  if (
+    pointIndexes.includes(0) ||
+    pointIndexes.includes(route.route.length - 1)
+  ) {
+    return false
+  }
+
+  const bounds = getInsetNodeBounds(node, POSITION_EPSILON)
+  let changed = false
+  for (const candidateIndex of pointIndexes) {
+    const point = route.route[candidateIndex]
+    if (!point) continue
+    point.x = clampValue(point.x + dx, bounds.minX, bounds.maxX)
+    point.y = clampValue(point.y + dy, bounds.minY, bounds.maxY)
+    changed = true
+  }
+
+  return changed
+}
+
+const distributeProjectionSegmentMove = (
+  routes: HighDensityRoute[],
+  segment: ProjectionSegment,
+  dx: number,
+  dy: number,
+  node: NodeWithPortPoints,
+  t: number,
+) => {
+  const startWeight = 1 - clampUnitInterval(t)
+  const endWeight = clampUnitInterval(t)
+  const movedStart = applyProjectionRoutePointMove(
+    routes,
+    segment.routeIndex,
+    segment.startIndex,
+    dx * startWeight,
+    dy * startWeight,
+    node,
+  )
+  const movedEnd = applyProjectionRoutePointMove(
+    routes,
+    segment.routeIndex,
+    segment.endIndex,
+    dx * endWeight,
+    dy * endWeight,
+    node,
+  )
+
+  return movedStart || movedEnd
+}
+
+const projectSegmentSegmentClearance = (
+  routes: HighDensityRoute[],
+  node: NodeWithPortPoints,
+  segments: ProjectionSegment[],
+) => {
+  let changed = false
+
+  for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
+    const left = segments[leftIndex]
+    if (!left) continue
+
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < segments.length;
+      rightIndex += 1
+    ) {
+      const right = segments[rightIndex]
+      if (
+        !right ||
+        left.z !== right.z ||
+        left.rootConnectionName === right.rootConnectionName
+      ) {
+        continue
+      }
+
+      const [candidate] = getProjectionSegmentDistanceCandidates(left, right)
+      if (!candidate) continue
+
+      const separationX = candidate.leftPoint.x - candidate.rightPoint.x
+      const separationY = candidate.leftPoint.y - candidate.rightPoint.y
+      const distance = Math.hypot(separationX, separationY)
+      const requiredDistance =
+        left.traceRadius +
+        right.traceRadius +
+        RELAXED_TRACE_CLEARANCE +
+        CLEARANCE_SLACK
+      const penetration = requiredDistance - distance
+      if (penetration <= 0) continue
+
+      const leftVectorX = left.end.x - left.start.x
+      const leftVectorY = left.end.y - left.start.y
+      const fallbackMagnitude = Math.hypot(leftVectorX, leftVectorY)
+      const fallbackSign = (leftIndex + rightIndex) % 2 === 0 ? 1 : -1
+      const directionX =
+        distance > POSITION_EPSILON
+          ? separationX / distance
+          : fallbackMagnitude > POSITION_EPSILON
+            ? (-leftVectorY / fallbackMagnitude) * fallbackSign
+            : 1
+      const directionY =
+        distance > POSITION_EPSILON
+          ? separationY / distance
+          : fallbackMagnitude > POSITION_EPSILON
+            ? (leftVectorX / fallbackMagnitude) * fallbackSign
+            : 0
+      const move = Math.min(MAX_TRACE_MOVE_PER_PASS, penetration / 2)
+
+      changed =
+        distributeProjectionSegmentMove(
+          routes,
+          left,
+          directionX * move,
+          directionY * move,
+          node,
+          candidate.leftT,
+        ) || changed
+      changed =
+        distributeProjectionSegmentMove(
+          routes,
+          right,
+          -directionX * move,
+          -directionY * move,
+          node,
+          candidate.rightT,
+        ) || changed
+    }
+  }
+
+  return changed
+}
+
+const improveViaClearance = (
+  node: NodeWithPortPoints,
+  routes: HighDensityRoute[],
+) => {
+  for (let pass = 0; pass < VIA_PROJECTION_PASSES; pass += 1) {
+    const vias = collectProjectionViaNodes(routes)
+    const segments = collectProjectionSegments(routes)
+    const changedViaVia = projectViaViaClearance(routes, node, vias)
+    const changedViaSegment = projectViaSegmentClearance(
+      routes,
+      node,
+      vias,
+      segments,
+    )
+    const changedSegmentSegment = projectSegmentSegmentClearance(
+      routes,
+      node,
+      segments,
+    )
+
+    if (!changedViaVia && !changedViaSegment && !changedSegmentSegment) break
+  }
+
+  for (const route of routes) {
+    route.vias = deriveVias(route)
+  }
+
+  return routes
+}
+
 const resolveClearanceConstraints = (
   bounds: Bounds,
   mutableRoutes: MutableRoute[],
@@ -839,18 +1392,17 @@ const resolveClearanceConstraints = (
           continue
         }
         const rightNode = rightElement.node
-        const targetClearance = leftElement.radius + rightElement.radius
 
         const separationX = leftNode.x - rightNode.x
         const separationY = leftNode.y - rightNode.y
         if (
-          Math.abs(separationX) >= targetClearance ||
-          Math.abs(separationY) >= targetClearance
+          Math.abs(separationX) >= TARGET_CLEARANCE ||
+          Math.abs(separationY) >= TARGET_CLEARANCE
         ) {
           continue
         }
         const distance = Math.hypot(separationX, separationY)
-        const penetration = targetClearance - distance
+        const penetration = TARGET_CLEARANCE - distance
         if (penetration <= 0) continue
 
         const fallbackSeed =
@@ -898,12 +1450,13 @@ const resolveClearanceConstraints = (
       const element = forceElements[elementIndex]
       if (!element) continue
       const elementNode = element.node
+      const targetClearance = getElementTargetClearance(element)
       const segmentSearches = getSegmentSpatialSearches(
         segmentSpatialIndex,
         element,
         elementNode.x,
         elementNode.y,
-        getElementTargetClearance(element),
+        targetClearance,
       )
 
       for (const segmentSearch of segmentSearches) {
@@ -932,7 +1485,6 @@ const resolveClearanceConstraints = (
           const separationX = elementNode.x - closestPointX
           const separationY = elementNode.y - closestPointY
           const distance = Math.hypot(separationX, separationY)
-          const targetClearance = element.radius + segment.traceRadius
           const penetration = targetClearance - distance
           if (penetration <= 0) continue
 
@@ -982,173 +1534,6 @@ const resolveClearanceConstraints = (
             segmentT,
           )
         }
-      }
-    }
-
-    for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
-      const left = segments[leftIndex]
-      if (!left) continue
-
-      for (
-        let rightIndex = leftIndex + 1;
-        rightIndex < segments.length;
-        rightIndex += 1
-      ) {
-        const right = segments[rightIndex]
-        if (
-          !right ||
-          left.z !== right.z ||
-          left.rootConnectionName === right.rootConnectionName
-        ) {
-          continue
-        }
-
-        const leftX = left.endNode.x - left.startNode.x
-        const leftY = left.endNode.y - left.startNode.y
-        const rightX = right.endNode.x - right.startNode.x
-        const rightY = right.endNode.y - right.startNode.y
-        const leftLengthSquared = leftX * leftX + leftY * leftY
-        const rightLengthSquared = rightX * rightX + rightY * rightY
-        if (
-          leftLengthSquared <= POSITION_EPSILON ||
-          rightLengthSquared <= POSITION_EPSILON
-        ) {
-          continue
-        }
-
-        let leftT = 0
-        let rightT = 0
-        let leftPointX = left.startNode.x
-        let leftPointY = left.startNode.y
-        let rightPointX = right.startNode.x
-        let rightPointY = right.startNode.y
-        let bestDistance = Number.POSITIVE_INFINITY
-        const cross = leftX * rightY - leftY * rightX
-
-        if (Math.abs(cross) > POSITION_EPSILON) {
-          const startSeparationX = right.startNode.x - left.startNode.x
-          const startSeparationY = right.startNode.y - left.startNode.y
-          const intersectionLeftT =
-            (startSeparationX * rightY - startSeparationY * rightX) / cross
-          const intersectionRightT =
-            (startSeparationX * leftY - startSeparationY * leftX) / cross
-
-          if (
-            intersectionLeftT >= 0 &&
-            intersectionLeftT <= 1 &&
-            intersectionRightT >= 0 &&
-            intersectionRightT <= 1
-          ) {
-            leftT = intersectionLeftT
-            rightT = intersectionRightT
-            leftPointX = left.startNode.x + leftX * leftT
-            leftPointY = left.startNode.y + leftY * leftT
-            rightPointX = leftPointX
-            rightPointY = leftPointY
-            bestDistance = 0
-          }
-        }
-
-        if (bestDistance > POSITION_EPSILON) {
-          const candidates = [
-            {
-              leftT: 0,
-              rightT: clampUnitInterval(
-                ((left.startNode.x - right.startNode.x) * rightX +
-                  (left.startNode.y - right.startNode.y) * rightY) /
-                  rightLengthSquared,
-              ),
-            },
-            {
-              leftT: 1,
-              rightT: clampUnitInterval(
-                ((left.endNode.x - right.startNode.x) * rightX +
-                  (left.endNode.y - right.startNode.y) * rightY) /
-                  rightLengthSquared,
-              ),
-            },
-            {
-              leftT: clampUnitInterval(
-                ((right.startNode.x - left.startNode.x) * leftX +
-                  (right.startNode.y - left.startNode.y) * leftY) /
-                  leftLengthSquared,
-              ),
-              rightT: 0,
-            },
-            {
-              leftT: clampUnitInterval(
-                ((right.endNode.x - left.startNode.x) * leftX +
-                  (right.endNode.y - left.startNode.y) * leftY) /
-                  leftLengthSquared,
-              ),
-              rightT: 1,
-            },
-          ]
-
-          for (const candidate of candidates) {
-            const candidateLeftX = left.startNode.x + leftX * candidate.leftT
-            const candidateLeftY = left.startNode.y + leftY * candidate.leftT
-            const candidateRightX =
-              right.startNode.x + rightX * candidate.rightT
-            const candidateRightY =
-              right.startNode.y + rightY * candidate.rightT
-            const candidateDistance = Math.hypot(
-              candidateLeftX - candidateRightX,
-              candidateLeftY - candidateRightY,
-            )
-
-            if (candidateDistance >= bestDistance) continue
-            bestDistance = candidateDistance
-            leftT = candidate.leftT
-            rightT = candidate.rightT
-            leftPointX = candidateLeftX
-            leftPointY = candidateLeftY
-            rightPointX = candidateRightX
-            rightPointY = candidateRightY
-          }
-        }
-
-        const targetClearance = left.traceRadius + right.traceRadius
-        const penetration = targetClearance - bestDistance
-        if (penetration <= 0) continue
-
-        const separationX = leftPointX - rightPointX
-        const separationY = leftPointY - rightPointY
-        const leftMagnitude = Math.hypot(leftX, leftY)
-        const fallbackSign = (passIndex + leftIndex + rightIndex) % 2 ? -1 : 1
-        const directionX =
-          bestDistance > POSITION_EPSILON
-            ? separationX / bestDistance
-            : leftMagnitude > POSITION_EPSILON
-              ? (-leftY / leftMagnitude) * fallbackSign
-              : 1
-        const directionY =
-          bestDistance > POSITION_EPSILON
-            ? separationY / bestDistance
-            : leftMagnitude > POSITION_EPSILON
-              ? (leftX / leftMagnitude) * fallbackSign
-              : 0
-        const magnitude = Math.min(
-          maxCorrection,
-          penetration * POINT_SEGMENT_CLEARANCE_PROJECTION_RATIO,
-        )
-        const correctionX = directionX * magnitude
-        const correctionY = directionY * magnitude
-
-        distributeForceToSegmentPoints(
-          left,
-          correctionX,
-          correctionY,
-          nodeCorrections,
-          leftT,
-        )
-        distributeForceToSegmentPoints(
-          right,
-          -correctionX,
-          -correctionY,
-          nodeCorrections,
-          rightT,
-        )
       }
     }
 
@@ -1238,14 +1623,9 @@ export const runForceDirectedImprovement = (
 
         const separationX = leftNode.x - rightNode.x
         const separationY = leftNode.y - rightNode.y
-        const targetClearance = leftElement.radius + rightElement.radius
-        const falloffDistance = Math.max(
-          CLEARANCE_FALLOFF_DISTANCE,
-          targetClearance + 0.1,
-        )
         if (
-          Math.abs(separationX) >= falloffDistance ||
-          Math.abs(separationY) >= falloffDistance
+          Math.abs(separationX) >= CLEARANCE_FALLOFF_DISTANCE ||
+          Math.abs(separationY) >= CLEARANCE_FALLOFF_DISTANCE
         ) {
           continue
         }
@@ -1270,9 +1650,6 @@ export const runForceDirectedImprovement = (
             VIA_VIA_REPULSION_STRENGTH,
             REPULSION_TAIL_RATIO,
             REPULSION_FALLOFF,
-            INTERSECTION_FORCE_BOOST,
-            targetClearance,
-            falloffDistance,
           ) * stepDecay
 
         if (magnitude <= 0) continue
@@ -1366,7 +1743,6 @@ export const runForceDirectedImprovement = (
             }
           }
 
-          const targetClearance = element.radius + segment.traceRadius
           const magnitude =
             getClearanceForceMagnitude(
               distance,
@@ -1374,7 +1750,7 @@ export const runForceDirectedImprovement = (
               REPULSION_TAIL_RATIO,
               REPULSION_FALLOFF,
               getElementIntersectionBoost(element),
-              targetClearance,
+              getElementTargetClearance(element),
               falloffDistance,
             ) * stepDecay
 
@@ -1696,6 +2072,7 @@ export class HighDensityForceImproveSolver extends BaseSolver {
       this.totalStepsPerNode,
       { includeForceVectors: true },
     )
+    improveViaClearance(sampleEntry.node, result.routes)
 
     for (let i = 0; i < sampleEntry.routeIndexes.length; i++) {
       this.improvedRoutesByIndex.set(
