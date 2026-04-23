@@ -42,6 +42,7 @@ type ForceElementBase = {
   rootConnectionName: string
   node: MutableNode
   fixed: boolean
+  radius: number
 }
 
 type PointForceElement = ForceElementBase & {
@@ -61,6 +62,7 @@ type SegmentObstacle = {
   z: number
   startNode: MutableNode
   endNode: MutableNode
+  traceRadius: number
 }
 
 type SegmentSpatialLayerIndex = {
@@ -486,6 +488,7 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
           rootConnectionName: mutableRoute.rootConnectionName,
           node,
           fixed: node.fixed,
+          radius: node.boundaryPadding || mutableRoute.route.viaDiameter / 2,
         })
         continue
       }
@@ -497,6 +500,7 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
         node,
         z: routePoint.z,
         fixed: node.fixed,
+        radius: mutableRoute.route.traceThickness / 2,
       })
     }
   }
@@ -531,6 +535,7 @@ const buildSegmentObstacles = (routes: MutableRoute[]): SegmentObstacle[] => {
         z: routePoint.z,
         startNode,
         endNode,
+        traceRadius: mutableRoute.route.traceThickness / 2,
       })
     }
   }
@@ -834,17 +839,18 @@ const resolveClearanceConstraints = (
           continue
         }
         const rightNode = rightElement.node
+        const targetClearance = leftElement.radius + rightElement.radius
 
         const separationX = leftNode.x - rightNode.x
         const separationY = leftNode.y - rightNode.y
         if (
-          Math.abs(separationX) >= TARGET_CLEARANCE ||
-          Math.abs(separationY) >= TARGET_CLEARANCE
+          Math.abs(separationX) >= targetClearance ||
+          Math.abs(separationY) >= targetClearance
         ) {
           continue
         }
         const distance = Math.hypot(separationX, separationY)
-        const penetration = TARGET_CLEARANCE - distance
+        const penetration = targetClearance - distance
         if (penetration <= 0) continue
 
         const fallbackSeed =
@@ -892,13 +898,12 @@ const resolveClearanceConstraints = (
       const element = forceElements[elementIndex]
       if (!element) continue
       const elementNode = element.node
-      const targetClearance = getElementTargetClearance(element)
       const segmentSearches = getSegmentSpatialSearches(
         segmentSpatialIndex,
         element,
         elementNode.x,
         elementNode.y,
-        targetClearance,
+        getElementTargetClearance(element),
       )
 
       for (const segmentSearch of segmentSearches) {
@@ -927,6 +932,7 @@ const resolveClearanceConstraints = (
           const separationX = elementNode.x - closestPointX
           const separationY = elementNode.y - closestPointY
           const distance = Math.hypot(separationX, separationY)
+          const targetClearance = element.radius + segment.traceRadius
           const penetration = targetClearance - distance
           if (penetration <= 0) continue
 
@@ -976,6 +982,173 @@ const resolveClearanceConstraints = (
             segmentT,
           )
         }
+      }
+    }
+
+    for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
+      const left = segments[leftIndex]
+      if (!left) continue
+
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < segments.length;
+        rightIndex += 1
+      ) {
+        const right = segments[rightIndex]
+        if (
+          !right ||
+          left.z !== right.z ||
+          left.rootConnectionName === right.rootConnectionName
+        ) {
+          continue
+        }
+
+        const leftX = left.endNode.x - left.startNode.x
+        const leftY = left.endNode.y - left.startNode.y
+        const rightX = right.endNode.x - right.startNode.x
+        const rightY = right.endNode.y - right.startNode.y
+        const leftLengthSquared = leftX * leftX + leftY * leftY
+        const rightLengthSquared = rightX * rightX + rightY * rightY
+        if (
+          leftLengthSquared <= POSITION_EPSILON ||
+          rightLengthSquared <= POSITION_EPSILON
+        ) {
+          continue
+        }
+
+        let leftT = 0
+        let rightT = 0
+        let leftPointX = left.startNode.x
+        let leftPointY = left.startNode.y
+        let rightPointX = right.startNode.x
+        let rightPointY = right.startNode.y
+        let bestDistance = Number.POSITIVE_INFINITY
+        const cross = leftX * rightY - leftY * rightX
+
+        if (Math.abs(cross) > POSITION_EPSILON) {
+          const startSeparationX = right.startNode.x - left.startNode.x
+          const startSeparationY = right.startNode.y - left.startNode.y
+          const intersectionLeftT =
+            (startSeparationX * rightY - startSeparationY * rightX) / cross
+          const intersectionRightT =
+            (startSeparationX * leftY - startSeparationY * leftX) / cross
+
+          if (
+            intersectionLeftT >= 0 &&
+            intersectionLeftT <= 1 &&
+            intersectionRightT >= 0 &&
+            intersectionRightT <= 1
+          ) {
+            leftT = intersectionLeftT
+            rightT = intersectionRightT
+            leftPointX = left.startNode.x + leftX * leftT
+            leftPointY = left.startNode.y + leftY * leftT
+            rightPointX = leftPointX
+            rightPointY = leftPointY
+            bestDistance = 0
+          }
+        }
+
+        if (bestDistance > POSITION_EPSILON) {
+          const candidates = [
+            {
+              leftT: 0,
+              rightT: clampUnitInterval(
+                ((left.startNode.x - right.startNode.x) * rightX +
+                  (left.startNode.y - right.startNode.y) * rightY) /
+                  rightLengthSquared,
+              ),
+            },
+            {
+              leftT: 1,
+              rightT: clampUnitInterval(
+                ((left.endNode.x - right.startNode.x) * rightX +
+                  (left.endNode.y - right.startNode.y) * rightY) /
+                  rightLengthSquared,
+              ),
+            },
+            {
+              leftT: clampUnitInterval(
+                ((right.startNode.x - left.startNode.x) * leftX +
+                  (right.startNode.y - left.startNode.y) * leftY) /
+                  leftLengthSquared,
+              ),
+              rightT: 0,
+            },
+            {
+              leftT: clampUnitInterval(
+                ((right.endNode.x - left.startNode.x) * leftX +
+                  (right.endNode.y - left.startNode.y) * leftY) /
+                  leftLengthSquared,
+              ),
+              rightT: 1,
+            },
+          ]
+
+          for (const candidate of candidates) {
+            const candidateLeftX = left.startNode.x + leftX * candidate.leftT
+            const candidateLeftY = left.startNode.y + leftY * candidate.leftT
+            const candidateRightX =
+              right.startNode.x + rightX * candidate.rightT
+            const candidateRightY =
+              right.startNode.y + rightY * candidate.rightT
+            const candidateDistance = Math.hypot(
+              candidateLeftX - candidateRightX,
+              candidateLeftY - candidateRightY,
+            )
+
+            if (candidateDistance >= bestDistance) continue
+            bestDistance = candidateDistance
+            leftT = candidate.leftT
+            rightT = candidate.rightT
+            leftPointX = candidateLeftX
+            leftPointY = candidateLeftY
+            rightPointX = candidateRightX
+            rightPointY = candidateRightY
+          }
+        }
+
+        const targetClearance = left.traceRadius + right.traceRadius
+        const penetration = targetClearance - bestDistance
+        if (penetration <= 0) continue
+
+        const separationX = leftPointX - rightPointX
+        const separationY = leftPointY - rightPointY
+        const leftMagnitude = Math.hypot(leftX, leftY)
+        const fallbackSign = (passIndex + leftIndex + rightIndex) % 2 ? -1 : 1
+        const directionX =
+          bestDistance > POSITION_EPSILON
+            ? separationX / bestDistance
+            : leftMagnitude > POSITION_EPSILON
+              ? (-leftY / leftMagnitude) * fallbackSign
+              : 1
+        const directionY =
+          bestDistance > POSITION_EPSILON
+            ? separationY / bestDistance
+            : leftMagnitude > POSITION_EPSILON
+              ? (leftX / leftMagnitude) * fallbackSign
+              : 0
+        const magnitude = Math.min(
+          maxCorrection,
+          penetration * POINT_SEGMENT_CLEARANCE_PROJECTION_RATIO,
+        )
+        const correctionX = directionX * magnitude
+        const correctionY = directionY * magnitude
+
+        distributeForceToSegmentPoints(
+          left,
+          correctionX,
+          correctionY,
+          nodeCorrections,
+          leftT,
+        )
+        distributeForceToSegmentPoints(
+          right,
+          -correctionX,
+          -correctionY,
+          nodeCorrections,
+          rightT,
+        )
       }
     }
 
@@ -1065,9 +1238,14 @@ export const runForceDirectedImprovement = (
 
         const separationX = leftNode.x - rightNode.x
         const separationY = leftNode.y - rightNode.y
+        const targetClearance = leftElement.radius + rightElement.radius
+        const falloffDistance = Math.max(
+          CLEARANCE_FALLOFF_DISTANCE,
+          targetClearance + 0.1,
+        )
         if (
-          Math.abs(separationX) >= CLEARANCE_FALLOFF_DISTANCE ||
-          Math.abs(separationY) >= CLEARANCE_FALLOFF_DISTANCE
+          Math.abs(separationX) >= falloffDistance ||
+          Math.abs(separationY) >= falloffDistance
         ) {
           continue
         }
@@ -1092,6 +1270,9 @@ export const runForceDirectedImprovement = (
             VIA_VIA_REPULSION_STRENGTH,
             REPULSION_TAIL_RATIO,
             REPULSION_FALLOFF,
+            INTERSECTION_FORCE_BOOST,
+            targetClearance,
+            falloffDistance,
           ) * stepDecay
 
         if (magnitude <= 0) continue
@@ -1185,6 +1366,7 @@ export const runForceDirectedImprovement = (
             }
           }
 
+          const targetClearance = element.radius + segment.traceRadius
           const magnitude =
             getClearanceForceMagnitude(
               distance,
@@ -1192,7 +1374,7 @@ export const runForceDirectedImprovement = (
               REPULSION_TAIL_RATIO,
               REPULSION_FALLOFF,
               getElementIntersectionBoost(element),
-              getElementTargetClearance(element),
+              targetClearance,
               falloffDistance,
             ) * stepDecay
 
