@@ -264,15 +264,23 @@ const findNodeIndexForRoute = (
   const routePoints = route.route.map(({ x, y }) => ({ x, y }))
   const viaPoints = route.vias.map(({ x, y }) => ({ x, y }))
   const points = [...routePoints, ...viaPoints]
+  let bestNodeIndex = -1
+  let bestNodeArea = Number.POSITIVE_INFINITY
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
-    if (points.every((point) => isPointInsideNode(point, node, margin))) {
-      return i
+    if (!node || !points.every((point) => isPointInsideNode(point, node, margin))) {
+      continue
+    }
+
+    const nodeArea = node.width * node.height
+    if (nodeArea < bestNodeArea) {
+      bestNodeArea = nodeArea
+      bestNodeIndex = i
     }
   }
 
-  return -1
+  return bestNodeIndex
 }
 
 const getEndpointOrthogonalLockAxis = (
