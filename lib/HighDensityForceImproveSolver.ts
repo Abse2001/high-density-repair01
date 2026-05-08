@@ -269,7 +269,10 @@ const findNodeIndexForRoute = (
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
-    if (!node || !points.every((point) => isPointInsideNode(point, node, margin))) {
+    if (
+      !node ||
+      !points.every((point) => isPointInsideNode(point, node, margin))
+    ) {
       continue
     }
 
