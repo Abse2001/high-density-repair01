@@ -2,5 +2,6 @@
 save = false
 
 [test]
+preload = ["./tests/fixtures/preload.ts"]
 root = "./tests"
 pathIgnorePatterns = ["tscircuit-autorouter/**", "hd-cache.tscircuit.com/**"]

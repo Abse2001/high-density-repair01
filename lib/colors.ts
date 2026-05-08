@@ -1,6 +1,6 @@
 import { ConnectivityMap } from "circuit-json-to-connectivity-map"
 import type { SimpleRouteJson } from "./srj-types"
-import { transparentize } from "polished"
+import { transparentizeColor } from "./utils/color-parser"
 
 export const COLORS = [
   "blue",
@@ -36,7 +36,7 @@ export const getColorMap = (
 
 export const safeTransparentize = (color: string, amount: number) => {
   try {
-    return transparentize(amount, color)
+    return transparentizeColor(amount, color)
   } catch (e) {
     console.error(e)
     return color
