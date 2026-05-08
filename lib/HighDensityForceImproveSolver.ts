@@ -273,6 +273,8 @@ const findNodeIndexForRoute = (
       continue
     }
 
+    // Prefer the tightest containing node so short sub-node routes
+    // are not assigned to a larger parent and collapsed by clamping.
     const nodeArea = node.width * node.height
     if (nodeArea < bestNodeArea) {
       bestNodeArea = nodeArea
