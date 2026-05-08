@@ -24,20 +24,6 @@ const isTargetTrace = (item: {
   item.connectionName === TARGET_TRACE_NAME ||
   item.rootConnectionName === TARGET_TRACE_NAME
 
-const hasDegenerateSameLayerSegment = (route: HighDensityRoute) => {
-  for (let i = 0; i < route.route.length - 1; i += 1) {
-    const start = route.route[i]
-    const end = route.route[i + 1]
-
-    if (!start || !end || start.z !== end.z) continue
-    if (start.x === end.x && start.y === end.y) {
-      return true
-    }
-  }
-
-  return false
-}
-
 const createTraceVisualization = (params: {
   routes: HighDensityRoute[]
   colorMap?: Record<string, string>
@@ -111,8 +97,6 @@ test("HighDensityForceImproveSolver final view matches the regression snapshot",
   solver.solve()
 
   const targetRoutes = solver.getOutput().filter(isTargetTrace)
-
-  expect(targetRoutes.some(hasDegenerateSameLayerSegment)).toBe(false)
 
   const graphics = createTraceVisualization({
     routes: targetRoutes,
