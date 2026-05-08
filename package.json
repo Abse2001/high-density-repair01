@@ -34,7 +34,9 @@
     "@vitejs/plugin-react": "^6.0.1",
     "circuit-json-to-connectivity-map": "^0.0.23",
     "dataset-hd08": "github:tscircuit/dataset-hd08",
+    "bun-match-svg": "^0.0.15",
     "graphics-debug": "^0.0.87",
+    "looks-same": "^9.0.1",
     "react": "^19.2.4",
     "react-cosmos": "^7.2.0",
     "react-cosmos-plugin-vite": "^7.2.0",
@@ -43,6 +45,7 @@
     "vite": "^8.0.1"
   },
   "dependencies": {
-    "flatbush": "^4.5.1"
+    "flatbush": "^4.5.1",
+    "polished": "^4.3.1"
   }
 }
