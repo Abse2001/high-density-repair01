@@ -96,10 +96,8 @@ test("HighDensityForceImproveSolver final view matches the regression snapshot",
 
   solver.solve()
 
-  const targetRoutes = solver.getOutput().filter(isTargetTrace)
-
   const graphics = createTraceVisualization({
-    routes: targetRoutes,
+    routes: solver.getOutput().filter(isTargetTrace),
     colorMap: fixture.colorMap,
   })
 
