@@ -46,8 +46,7 @@ const createTraceVisualization = (params: {
           { x: start.x, y: start.y },
           { x: end.x, y: end.y },
         ],
-        strokeColor:
-          start.z === 0 ? traceColor : "rgba(76, 0, 255, 0.5)",
+        strokeColor: start.z === 0 ? traceColor : "rgba(76, 0, 255, 0.5)",
         strokeWidth: route.traceThickness,
         strokeDash: start.z === 0 ? undefined : [0.1, 0.3],
         layer: `trace-z${start.z}`,
@@ -74,12 +73,16 @@ const createTraceVisualization = (params: {
 }
 
 const fixturePath = fileURLToPath(
-  new URL("./fixtures/highDensityForceImproveSolver-input.json", import.meta.url),
+  new URL(
+    "./fixtures/highDensityForceImproveSolver-input.json",
+    import.meta.url,
+  ),
 )
 
 test("HighDensityForceImproveSolver final view matches the regression snapshot", async () => {
-  const fixtureEntries =
-    (await Bun.file(fixturePath).json()) as SolverFixtureEntry[]
+  const fixtureEntries = (await Bun.file(
+    fixturePath,
+  ).json()) as SolverFixtureEntry[]
 
   const fixture = fixtureEntries[0]
 
