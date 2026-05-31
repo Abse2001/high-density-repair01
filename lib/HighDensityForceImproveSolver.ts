@@ -128,6 +128,20 @@ export type ForceImproveOptions = {
   includeForceVectors?: boolean
 }
 
+// The first and last trace segments encode pad escape/arrival geometry.
+const isPointOnProtectedEndpointSegment = (
+  routeLength: number,
+  index: number,
+) => index <= 1 || index >= routeLength - 2
+
+const includesProtectedEndpointSegmentPoint = (
+  routeLength: number,
+  pointIndexes: number[],
+) =>
+  pointIndexes.some((pointIndex) =>
+    isPointOnProtectedEndpointSegment(routeLength, pointIndex),
+  )
+
 const TARGET_CLEARANCE = 0.2
 const CLEARANCE_FALLOFF_DISTANCE = 0.4
 const VIA_DIAMETER = 0.3
@@ -479,6 +493,10 @@ const buildMutableRoutes = (routes: HighDensityRoute[]) => {
           )
         }
         lastNode.pointIndexes.push(index)
+        lastNode.fixed ||= isPointOnProtectedEndpointSegment(
+          route.route.length,
+          index,
+        )
         pointNodeIndexes[index] = lastNodeIndex
         continue
       }
@@ -490,7 +508,7 @@ const buildMutableRoutes = (routes: HighDensityRoute[]) => {
         originalY: point.y,
         boundaryPadding: 0,
         pointIndexes: [index],
-        fixed: index === 0 || index === route.route.length - 1,
+        fixed: isPointOnProtectedEndpointSegment(route.route.length, index),
         forceIndex: nextForceIndex,
       })
       pointNodeIndexes[index] = nodes.length - 1
@@ -923,9 +941,10 @@ const collectProjectionViaNodes = (
         x: current.x,
         y: current.y,
         radius: (route.viaDiameter ?? VIA_DIAMETER) / 2,
-        movable:
-          !uniquePointIndexes.includes(0) &&
-          !uniquePointIndexes.includes(route.route.length - 1),
+        movable: !includesProtectedEndpointSegmentPoint(
+          route.route.length,
+          uniquePointIndexes,
+        ),
       })
     }
   }
@@ -1131,10 +1150,7 @@ const applyProjectionRoutePointMove = (params: {
   }
 
   const pointIndexes = getCoincidentPointIndexes(route.route, pointIndex)
-  if (
-    pointIndexes.includes(0) ||
-    pointIndexes.includes(route.route.length - 1)
-  ) {
+  if (includesProtectedEndpointSegmentPoint(route.route.length, pointIndexes)) {
     return false
   }
 
