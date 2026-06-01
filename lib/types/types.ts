@@ -38,6 +38,7 @@ export interface ViaRegion {
 export interface NodeHdRoute {
   capacityMeshNodeId: string
   connectionName: string
+  regionId?: string
   rootConnectionName: string
   route: Point3D[]
   traceThickness: number
