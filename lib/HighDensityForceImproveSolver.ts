@@ -1,5 +1,6 @@
 import Flatbush from "flatbush"
 import type { GraphicsObject } from "graphics-debug"
+import { BaseSolver } from "./BaseSolver"
 import type {
   HighDensityRoute,
   NodeWithPortPoints,
@@ -15,7 +16,6 @@ import {
   getProjectionSegmentDistanceCandidates,
   pointToProjectionSegment,
 } from "./utils/force-improve-segment-helpers"
-import { BaseSolver } from "./BaseSolver"
 
 type Vector = {
   x: number
@@ -275,6 +275,12 @@ const findNodeIndexForRoute = (
   nodes: NodeWithPortPoints[],
   margin: number,
 ): number => {
+  if (route.regionId) {
+    const regionNodeIndex = nodes.findIndex(
+      (node) => node.capacityMeshNodeId === route.regionId,
+    )
+    if (regionNodeIndex !== -1) return regionNodeIndex
+  }
   const routePoints = route.route.map(({ x, y }) => ({ x, y }))
   const viaPoints = route.vias.map(({ x, y }) => ({ x, y }))
   const points = [...routePoints, ...viaPoints]
