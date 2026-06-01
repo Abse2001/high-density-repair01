@@ -265,18 +265,8 @@ const findNodeIndexForRoute = (
     const regionNodeIndex = nodes.findIndex(
       (node) => node.capacityMeshNodeId === route.regionId,
     )
-    console.assert(
-      regionNodeIndex !== -1,
-      `HighDensityForceImproveSolver could not find node for route.regionId ${route.regionId}`,
-    )
     if (regionNodeIndex !== -1) return regionNodeIndex
-  } else {
-    console.assert(
-      false,
-      `HighDensityForceImproveSolver route ${route.connectionName} is missing regionId; falling back to geometry`,
-    )
   }
-
   const routePoints = route.route.map(({ x, y }) => ({ x, y }))
   const viaPoints = route.vias.map(({ x, y }) => ({ x, y }))
   const points = [...routePoints, ...viaPoints]
