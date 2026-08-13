@@ -1230,17 +1230,30 @@ const projectSegmentSegmentClearance = (params: {
         continue
       }
 
+      const requiredDistance =
+        left.traceRadius +
+        right.traceRadius +
+        RELAXED_TRACE_CLEARANCE +
+        CLEARANCE_SLACK
+      if (
+        Math.max(left.start.x, left.end.x) + requiredDistance <=
+          Math.min(right.start.x, right.end.x) ||
+        Math.max(right.start.x, right.end.x) + requiredDistance <=
+          Math.min(left.start.x, left.end.x) ||
+        Math.max(left.start.y, left.end.y) + requiredDistance <=
+          Math.min(right.start.y, right.end.y) ||
+        Math.max(right.start.y, right.end.y) + requiredDistance <=
+          Math.min(left.start.y, left.end.y)
+      ) {
+        continue
+      }
+
       const [candidate] = getProjectionSegmentDistanceCandidates(left, right)
       if (!candidate) continue
 
       const separationX = candidate.leftPoint.x - candidate.rightPoint.x
       const separationY = candidate.leftPoint.y - candidate.rightPoint.y
       const distance = Math.hypot(separationX, separationY)
-      const requiredDistance =
-        left.traceRadius +
-        right.traceRadius +
-        RELAXED_TRACE_CLEARANCE +
-        CLEARANCE_SLACK
       const penetration = requiredDistance - distance
       if (penetration <= 0) continue
 
