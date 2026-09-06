@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
 import { HighDensityForceImproveSolver } from "../lib/HighDensityForceImproveSolver"
-import type { HighDensityRoute, NodeWithPortPoints } from "../lib/types/high-density-types"
+import type {
+  HighDensityRoute,
+  NodeWithPortPoints,
+} from "../lib/types/high-density-types"
 
 test("force improvement preserves exact protected points and terminal vias", (): void => {
   const inputRoute: HighDensityRoute = {

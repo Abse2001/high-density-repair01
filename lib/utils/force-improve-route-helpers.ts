@@ -18,7 +18,9 @@ type Bounds = {
 export const getRouteRootConnectionName = (route: HighDensityRoute) =>
   route.rootConnectionName ?? route.connectionName
 
-export const deriveVias = (route: HighDensityRoute): HighDensityRoute["vias"] => {
+export const deriveVias = (
+  route: HighDensityRoute,
+): HighDensityRoute["vias"] => {
   const vias: HighDensityRoute["vias"] = []
 
   for (let index = 0; index < route.route.length - 1; index += 1) {
